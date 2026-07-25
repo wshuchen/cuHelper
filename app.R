@@ -7,6 +7,9 @@ library(shinyjs)
 library(grantham)
 library(DT)
 
+# aa_df = read.table("amino_acid_chemical_property.tsv", header = TRUE, sep = "\t")
+# ttn_df = read.table("ttn.txt", header = TRUE, sep = "\t")
+
 ui = page_navbar(
               shinyjs::useShinyjs(),
               theme = bs_theme(version = 5, bootswatch = "united"),
@@ -37,6 +40,68 @@ ui = page_navbar(
                           )
                       )
                   )),
+              
+              
+              ## Check if two papers have overlapping authors
+              h5(HTML("<b>Check overlapping authors</b>"), 
+                 a(id = "toggleAuthor", h5(HTML("<b>show/hide</b>")), href = "#")),
+              shinyjs::hidden(wellPanel(
+                  id = "author",
+                  h6("Provide two PubMed IDs OR two lists of authors. The lists should not include any special symbol."),
+                  layout_columns(
+                      col_widths = c(3, 6, 3),
+                      card(
+                          card_header("PubMed ID"),
+                          numericInput("id1", "PubMed ID 1",
+                                       value = ""),
+                          numericInput("id2", "PubMed ID 2",
+                                       value = "")
+                      ),
+                      card(card_header("PubMed authors"),
+                           card(
+                               tags$style(type = "text/css", "textarea {width:100%}"),
+                               tags$textarea(id = "authors1",
+                                             value = "",
+                                             placeholder = "Copy and paste paper 1 authors here.",
+                                             rows = 5)
+                           ),
+                           card(
+                               tags$style(type = "text/css", "textarea {width:100%}"),
+                               tags$textarea(id = "authors2",
+                                             value = "",
+                                             placeholder = "Copy and paste paper 2 authors here.",
+                                             rows = 5)
+                           ),
+                      ),
+                      card(card_header("Overlapping authors"),
+                           uiOutput("sameauthors")
+                      )
+                  )
+                  
+              )),
+              
+              ## Coordinate extractor
+              h5(HTML("<b>Coordinate extractor</b>"), 
+                 a(id = "toggleCoordinate", h5(HTML("<b>show/hide</b>")), href = "#")),
+              shinyjs::hidden(wellPanel(
+                  id = "Coordinate",
+                  h6("Extract coordinates from copy of low coverage table."),
+                  card(
+                      layout_columns(
+                          col_widths = c(8, 4),
+                          card(card_header("Low coverage table"),
+                               tags$style(type = "text/css", "textarea {width:100%}"),
+                               tags$textarea(id = "lowCoverage",
+                                             value = "",
+                                             placeholder = "Copy and paste low coverage table here.",
+                                             rows = 10)
+                          ),
+                          card(card_header("Coordinates and genes"),
+                               uiOutput("coordinate")
+                          )
+                      )
+                  )
+              )),
               
               ## Allele variant nomenclature composer
               h5(HTML("<b>Complex allele composer</b>"), 
@@ -75,44 +140,6 @@ ui = page_navbar(
                           uiOutput("nomen")
                       )
                   )
-              )),
-              
-              ## Check if two papers have overlapping authors
-              h5(HTML("<b>Check overlapping authors</b>"), 
-                 a(id = "toggleAuthor", h5(HTML("<b>show/hide</b>")), href = "#")),
-              shinyjs::hidden(wellPanel(
-                  id = "author",
-                  h6("Provide two PubMed IDs OR two lists of authors. The lists should not include any special symbol."),
-                  layout_columns(
-                      col_widths = c(3, 6, 3),
-                      card(
-                          card_header("PubMed ID"),
-                          numericInput("id1", "PubMed ID 1",
-                                       value = ""),
-                          numericInput("id2", "PubMed ID 2",
-                                       value = "")
-                      ),
-                      card(card_header("PubMed authors"),
-                           card(
-                               tags$style(type = "text/css", "textarea {width:100%}"),
-                               tags$textarea(id = "authors1",
-                                             value = "",
-                                             placeholder = "Copy and paste paper 1 authors here.",
-                                             rows = 5)
-                           ),
-                           card(
-                               tags$style(type = "text/css", "textarea {width:100%}"),
-                               tags$textarea(id = "authors2",
-                                             value = "",
-                                             placeholder = "Copy and paste paper 2 authors here.",
-                                             rows = 5)
-                           ),
-                      ),
-                      card(card_header("Overlapping authors"),
-                           uiOutput("sameauthors")
-                      )
-                  )
-                  
               )),
               
               ## Calculator
@@ -239,7 +266,7 @@ server <- function(input, output, session) {
     })
     
     ## Amino acid property display
-    aa_df = read.table("data/amino_acid_chemical_property.tsv", 
+    aa_df = read.table("amino_acid_chemical_property.tsv", 
                        header = TRUE, sep = "\t")
     
     aa_table = reactive({
@@ -395,7 +422,7 @@ server <- function(input, output, session) {
     })
     
     ## TTN exon lookup
-    ttn_df = read.table("data/ttn.txt", header = TRUE, sep = "\t")
+    ttn_df = read.table("ttn.txt", header = TRUE, sep = "\t")
     exon_start = numeric()
     exon_end = numeric()
     exon_df = data.frame()
@@ -443,6 +470,38 @@ server <- function(input, output, session) {
                 scores
             }
     })
+    
+    ## Low coverage coordinate extractor
+    coordinates = reactive({
+            pos_df = data.frame()
+            if (!nzchar(input$lowCoverage)) {
+                pos_df = pos_df
+            } else {
+                lines = strsplit(input$lowCoverage, "\n")[[1]]
+                coverage_lines = grep("Coverage_", lines, value = TRUE)
+                req(length(coverage_lines) >= 1)
+    
+                parsed = lapply(coverage_lines, function(line) {
+                    fields = strsplit(line, "\t")[[1]]
+                    chrom = fields[2]
+                    start = as.numeric(fields[3])
+                    end   = fields[4]
+                    gene  = strsplit(fields[5], ":")[[1]][1]
+                    data.frame(chrom = chrom, start = start, end = end, 
+                               gene = gene, stringsAsFactors = FALSE)
+                })
+                pos_df = do.call(rbind, parsed)
+                
+                # Ordering: chr1, chr2, ..., chr22, chrX, chrY, chrM
+                chrom_num = suppressWarnings(as.numeric(sub("^chr", "", pos_df$chrom)))
+                chrom_rank = ifelse(!is.na(chrom_num), chrom_num,
+                                     match(sub("^chr", "", pos_df$chrom), 
+                                           c("X", "Y", "M")) + 100)
+                pos_df = pos_df[order(chrom_rank, pos_df$start), ]
+            }
+            pos_df
+    })
+    
     
     ## Output
     ## HGMD reference conversion
@@ -509,6 +568,19 @@ server <- function(input, output, session) {
             }
     })
     
+    ## Coordinates
+    observe({
+            pos_df = coordinates()
+            if (nrow(pos_df) < 1) {
+                output$coordinate <- renderUI({HTML("Waiting for input.")})
+            }
+            else {
+                output$coordinate <- renderUI({
+                    HTML(paste0(pos_df$chrom, ":", pos_df$start, "-", pos_df$end,
+                                " ", pos_df$gene, "<br>"))
+                })
+            }
+    })
     ## Allele variants
     nomen = reactive({nomen = write_nomen(input$variant1, input$variant2, 
                                           input$phase, input$protein)
@@ -554,6 +626,9 @@ server <- function(input, output, session) {
     })
     observe({shinyjs::onclick("toggleCalculator", 
             shinyjs::toggle(id = "calculator", anim = TRUE))
+    })
+    observe({shinyjs::onclick("toggleCoordinate", 
+            shinyjs::toggle(id = "Coordinate", anim = TRUE))
     })
 }
 
