@@ -7,13 +7,10 @@ library(shinyjs)
 library(grantham)
 library(DT)
 
-# aa_df = read.table("amino_acid_chemical_property.tsv", header = TRUE, sep = "\t")
-# ttn_df = read.table("ttn.txt", header = TRUE, sep = "\t")
-
 ui = page_navbar(
               shinyjs::useShinyjs(),
               theme = bs_theme(version = 5, bootswatch = "united"),
-              title = h2(HTML("<b>CuHelper</b>"), 
+              title = h2(HTML("<b>cuHelper</b>"), 
                          style = "font-style: italic; color: green; margin-bottom: 50px;"),
 
     ## Small tools
@@ -40,8 +37,7 @@ ui = page_navbar(
                           )
                       )
                   )),
-              
-              
+                          
               ## Check if two papers have overlapping authors
               h5(HTML("<b>Check overlapping authors</b>"), 
                  a(id = "toggleAuthor", h5(HTML("<b>show/hide</b>")), href = "#")),
@@ -252,33 +248,136 @@ ui = page_navbar(
 
 server <- function(input, output, session) {
     library(stringr)
+    
+    ## SpliceAI output converter
+    splice_scores = reactive({
+            if (!nzchar(input$spliceAIscore)) {
+                "Please provide SpliceAI search result"
+            } else {
+                ai_scores = strsplit(input$spliceAIscore, "\n")[[1]]
+                scores = lapply(ai_scores, function(x) strsplit(x, "\t")[[1]])
+                scores = sapply(scores, function(x) {
+                                c(tolower(x[1]), gsub(" ", "", x[3]), x[2])
+                })
+                scores = data.frame(t(as.data.frame(scores)))
+                colnames(scores) = c("loss_gain", "distance", "score")
+                scores = scores[!is.na(scores$distance) & 
+                                    scores$score > 0 & scores$score != "0.00", ]
+                scores = scores[order(scores$score, decreasing = TRUE), ]
+                scores = apply(scores, 1, function(x) 
+                                c(paste0(x[1], " at ", x[2], ": ", x[3])))
+                scores
+            }
+    })
+    
+    ## Chech overlapping authors
+    check_authors_id = function(id1, id2) {
+                esum = entrez_summary("pubmed", c(id1, id2))
+                same_authors = intersect(esum[[1]]$authors$name, 
+                                         esum[[2]]$authors$name)
+                return(same_authors)
+    }
+    
+    make_author_list = function(pubmed_authors) {
+                authors = gsub("\\d", "", pubmed_authors)
+                authors = gsub("\\.", "", pubmed_authors)
+                authors = strsplit(authors, ",")
+                authors = sapply(authors, function(x) str_trim(x))
+                return(authors)
+    }
 
-    # Grantham distance calculation
-    grantham_dist = reactive({
-                    D = data.frame()
-                    x = c(input$aa_x)
-                    y = c(input$aa_y)
-                    if (length(x) > 0 & length(y) > 0) {
-                        aa_pairs = amino_acid_pairs(x, y)
-                        D = grantham_distance(aa_pairs$x, aa_pairs$y)
+    same_authors = reactive({
+                same = ""
+                if (!is.na(input$id1) && !is.na(input$id2)) {
+                    same = check_authors_id(input$id1, input$id2)
+                }
+                else {
+                    list1 = make_author_list(input$authors1)
+                    list2 = make_author_list(input$authors2)
+                    if (length(list1) > 1 && length(list2) > 1) {
+                        same = intersect(list1,list2)
                     }
-                    D
+                }
+                same
     })
     
-    ## Amino acid property display
-    aa_df = read.table("amino_acid_chemical_property.tsv", 
-                       header = TRUE, sep = "\t")
+    ## Low coverage coordinate extractor
+    coordinates = reactive({
+            pos_df = data.frame()
+            if (!nzchar(input$lowCoverage)) {
+                pos_df = pos_df
+            } else {
+                lines = strsplit(input$lowCoverage, "\n")[[1]]
+                coverage_lines = grep("Coverage_", lines, value = TRUE)
+                req(length(coverage_lines) >= 1)
     
-    aa_table = reactive({
-                AA = data.frame()
-                x = c(input$aa_x)
-                y = c(input$aa_y)
-                if (length(x) > 0) AA = aa_df[aa_df$abbr %in% x, ]
-                if (length(y) >0) AA = aa_df[aa_df$abbr %in% y, ]
-                if (length(x) > 0 & length(y) >0) AA = aa_df[aa_df$abbr %in% c(x, y), ]
-                AA
+                parsed = lapply(coverage_lines, function(line) {
+                    fields = strsplit(line, "\t")[[1]]
+                    chrom = fields[2]
+                    start = as.numeric(fields[3])
+                    end   = fields[4]
+                    gene  = strsplit(fields[5], ":")[[1]][1]
+                    data.frame(chrom = chrom, start = start, end = end, 
+                               gene = gene, stringsAsFactors = FALSE)
+                })
+                pos_df = do.call(rbind, parsed)
+                
+                # Ordering: chr1, chr2, ..., chr22, chrX, chrY, chrM
+                chrom_num = suppressWarnings(as.numeric(sub("^chr", "", pos_df$chrom)))
+                chrom_rank = ifelse(!is.na(chrom_num), chrom_num,
+                                     match(sub("^chr", "", pos_df$chrom), 
+                                           c("X", "Y", "M")) + 100)
+                pos_df = pos_df[order(chrom_rank, pos_df$start), ]
+            }
+            pos_df
     })
     
+    ## Complex allele variant composer
+    cp_nomen = function(variant) {
+            # "c.2351C>G (p.Pro784Arg)"
+            v = str_trim(str_split_i(variant, "\\(", 1))
+            v = str_split_i(v, "c\\.", 2)
+            p = str_trim(str_split_i(variant, "p\\.", 2))
+            p = str_split_i(p, "\\)", 1)
+            return(c(v, p))
+    }
+    
+    write_nomen = function(variant1 = input$variant1, 
+                           variant2 = input$variant2, 
+                           phase = "unknown", 
+                           protein = "predicted") {
+        
+            v1 = cp_nomen(variant1)
+            c1 = v1[1]
+            p1 = v1[2]
+            v2 = cp_nomen(variant2)
+            c2 = v2[1]
+            p2 = v2[2]
+    
+            if (protein == "confirmed") {
+                if (phase == "cis") {
+                    nomen = paste0("c.[", c1, ";", c2, "] ", "p.[", p1, ";", p2, "]")
+                }
+                if (phase == "trans") {
+                    nomen = paste0("c.[", c1, "];[", c2, "] ", "p.[", p1, "];[", p2, "]")
+                }
+                if (phase == "unknown")  {
+                    nomen = paste0("c.", c1, "(;)", c2, " ", "p.", p1, "(;)", p2)
+                }}
+            else {
+                if (phase == "cis") {
+                    nomen = paste0("c.[", c1, ";", c2, "] ", "p.[(", p1, ";", p2, ")]")
+                }
+                if (phase == "trans") {
+                    nomen = paste0("c.[", c1, "];[", c2, "] ", "p.[(", p1, ")];[(", p2, ")]")
+                }
+                if (phase == "unknown") {
+                    nomen = paste0("c.", c1, "(;)", c2, " ", "p.(", p1, ")(;)(", p2, ")")
+                }
+            }
+            return(nomen)
+    }
+        
     ## HGMD reference conversion to a table. Four lines for each reference.
     library(rentrez)
     
@@ -344,85 +443,34 @@ server <- function(input, output, session) {
                 ref_df
     })
     
-    ## Complex allele variant composer
-    cp_nomen = function(variant) {
-            # "c.2351C>G (p.Pro784Arg)"
-            v = str_trim(str_split_i(variant, "\\(", 1))
-            v = str_split_i(v, "c\\.", 2)
-            p = str_trim(str_split_i(variant, "p\\.", 2))
-            p = str_split_i(p, "\\)", 1)
-            return(c(v, p))
-    }
-    
-    write_nomen = function(variant1 = input$variant1, 
-                           variant2 = input$variant2, 
-                           phase = "unknown", 
-                           protein = "predicted") {
-        
-            v1 = cp_nomen(variant1)
-            c1 = v1[1]
-            p1 = v1[2]
-            v2 = cp_nomen(variant2)
-            c2 = v2[1]
-            p2 = v2[2]
-    
-            if (protein == "confirmed") {
-                if (phase == "cis") {
-                    nomen = paste0("c.[", c1, ";", c2, "] ", "p.[", p1, ";", p2, "]")
-                }
-                if (phase == "trans") {
-                    nomen = paste0("c.[", c1, "];[", c2, "] ", "p.[", p1, "];[", p2, "]")
-                }
-                if (phase == "unknown")  {
-                    nomen = paste0("c.", c1, "(;)", c2, " ", "p.", p1, "(;)", p2)
-                }}
-            else {
-                if (phase == "cis") {
-                    nomen = paste0("c.[", c1, ";", c2, "] ", "p.[(", p1, ";", p2, ")]")
-                }
-                if (phase == "trans") {
-                    nomen = paste0("c.[", c1, "];[", c2, "] ", "p.[(", p1, ")];[(", p2, ")]")
-                }
-                if (phase == "unknown") {
-                    nomen = paste0("c.", c1, "(;)", c2, " ", "p.(", p1, ")(;)(", p2, ")")
-                }
-            }
-            return(nomen)
-    }
-    
-    ## Chech overlapping authors
-    check_authors_id = function(id1, id2) {
-                esum = entrez_summary("pubmed", c(id1, id2))
-                same_authors = intersect(esum[[1]]$authors$name, 
-                                         esum[[2]]$authors$name)
-                return(same_authors)
-    }
-    
-    make_author_list = function(pubmed_authors) {
-                authors = gsub("\\d", "", pubmed_authors)
-                authors = gsub("\\.", "", pubmed_authors)
-                authors = strsplit(authors, ",")
-                authors = sapply(authors, function(x) str_trim(x))
-                return(authors)
-    }
-
-    same_authors = reactive({
-                same = ""
-                if (!is.na(input$id1) && !is.na(input$id2)) {
-                    same = check_authors_id(input$id1, input$id2)
-                }
-                else {
-                    list1 = make_author_list(input$authors1)
-                    list2 = make_author_list(input$authors2)
-                    if (length(list1) > 1 && length(list2) > 1) {
-                        same = intersect(list1,list2)
+    # Grantham distance calculation
+    grantham_dist = reactive({
+                    D = data.frame()
+                    x = c(input$aa_x)
+                    y = c(input$aa_y)
+                    if (length(x) > 0 & length(y) > 0) {
+                        aa_pairs = amino_acid_pairs(x, y)
+                        D = grantham_distance(aa_pairs$x, aa_pairs$y)
                     }
-                }
-                same
+                    D
     })
     
+    ## Amino acid property display
+    aa_df = read.table("data/amino_acid_chemical_property.tsv", 
+                       header = TRUE, sep = "\t")
+    
+    aa_table = reactive({
+                AA = data.frame()
+                x = c(input$aa_x)
+                y = c(input$aa_y)
+                if (length(x) > 0) AA = aa_df[aa_df$abbr %in% x, ]
+                if (length(y) >0) AA = aa_df[aa_df$abbr %in% y, ]
+                if (length(x) > 0 & length(y) >0) AA = aa_df[aa_df$abbr %in% c(x, y), ]
+                AA
+    }) 
+    
     ## TTN exon lookup
-    ttn_df = read.table("ttn.txt", header = TRUE, sep = "\t")
+    ttn_df = read.table("data/ttn.txt", header = TRUE, sep = "\t")
     exon_start = numeric()
     exon_end = numeric()
     exon_df = data.frame()
@@ -449,60 +497,7 @@ server <- function(input, output, session) {
             }
             exon_df
     })
-    
-    ## SpliceAI output converter
-    splice_scores = reactive({
-            if (!nzchar(input$spliceAIscore)) {
-                "Please provide SpliceAI search result"
-            } else {
-                ai_scores = strsplit(input$spliceAIscore, "\n")[[1]]
-                scores = lapply(ai_scores, function(x) strsplit(x, "\t")[[1]])
-                scores = sapply(scores, function(x) {
-                                c(tolower(x[1]), gsub(" ", "", x[3]), x[2])
-                })
-                scores = data.frame(t(as.data.frame(scores)))
-                colnames(scores) = c("loss_gain", "distance", "score")
-                scores = scores[!is.na(scores$distance) & 
-                                    scores$score > 0 & scores$score != "0.00", ]
-                scores = scores[order(scores$score, decreasing = TRUE), ]
-                scores = apply(scores, 1, function(x) 
-                                c(paste0(x[1], " at ", x[2], ": ", x[3])))
-                scores
-            }
-    })
-    
-    ## Low coverage coordinate extractor
-    coordinates = reactive({
-            pos_df = data.frame()
-            if (!nzchar(input$lowCoverage)) {
-                pos_df = pos_df
-            } else {
-                lines = strsplit(input$lowCoverage, "\n")[[1]]
-                coverage_lines = grep("Coverage_", lines, value = TRUE)
-                req(length(coverage_lines) >= 1)
-    
-                parsed = lapply(coverage_lines, function(line) {
-                    fields = strsplit(line, "\t")[[1]]
-                    chrom = fields[2]
-                    start = as.numeric(fields[3])
-                    end   = fields[4]
-                    gene  = strsplit(fields[5], ":")[[1]][1]
-                    data.frame(chrom = chrom, start = start, end = end, 
-                               gene = gene, stringsAsFactors = FALSE)
-                })
-                pos_df = do.call(rbind, parsed)
-                
-                # Ordering: chr1, chr2, ..., chr22, chrX, chrY, chrM
-                chrom_num = suppressWarnings(as.numeric(sub("^chr", "", pos_df$chrom)))
-                chrom_rank = ifelse(!is.na(chrom_num), chrom_num,
-                                     match(sub("^chr", "", pos_df$chrom), 
-                                           c("X", "Y", "M")) + 100)
-                pos_df = pos_df[order(chrom_rank, pos_df$start), ]
-            }
-            pos_df
-    })
-    
-    
+       
     ## Output
     ## HGMD reference conversion
     observe({
@@ -568,6 +563,20 @@ server <- function(input, output, session) {
             }
     })
     
+    ## overlapping authors
+    observe({
+            same_authors = same_authors()
+            n_same = length(same_authors)
+            same_authors = HTML(paste(same_authors, "<br>"))
+            if (n_same > 1) {
+                output$sameauthors = renderUI({
+                    HTML(paste0(n_same, "<br>", same_authors))
+                })
+            } else {
+                output$sameauthors = renderUI({same_authors})            
+            }
+    })
+    
     ## Coordinates
     observe({
             pos_df = coordinates()
@@ -581,6 +590,7 @@ server <- function(input, output, session) {
                 })
             }
     })
+    
     ## Allele variants
     nomen = reactive({nomen = write_nomen(input$variant1, input$variant2, 
                                           input$phase, input$protein)
@@ -588,20 +598,6 @@ server <- function(input, output, session) {
     observe({
             nomen = nomen()
             output$nomen = renderUI({HTML(paste(nomen))})
-    })
-    
-    ## overlapping authors
-    observe({
-            same_authors = same_authors()
-            n_same = length(same_authors)
-            same_authors = HTML(paste(same_authors, "<br>"))
-            if (n_same > 1) {
-                output$sameauthors = renderUI({
-                    HTML(paste0(n_same, "<br>", same_authors))
-                })
-            } else {
-                output$sameauthors = renderUI({same_authors})            
-            }
     })
     
     ## Calculator
