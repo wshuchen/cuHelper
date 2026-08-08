@@ -1,5 +1,5 @@
 ## Descristion
-This is a R shiny app with some simple tools of use in routine clinical variant curation. 
+This is a R shiny app with some simple tools for use in routine clinical variant curation. 
 
 ## App link  
 On Posit Connect Cloud:  
