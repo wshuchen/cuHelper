@@ -3,4 +3,4 @@ This is a R shiny app with some simple tools of use in routine clinical variant 
 
 ## App link  
 On Posit Connect Cloud:  
-[cuHelper](https://019ec64d-a8a7-6018-5dba-72ca7a8aae6d.share.connect.posit.cloud)
+[cuHelper](https://019f9b7e-c224-2b49-60e1-9841eec4bc50.share.connect.posit.cloud)
