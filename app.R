@@ -43,15 +43,16 @@ ui = page_navbar(
                  a(id = "toggleAuthor", h5(HTML("<b>show/hide</b>")), href = "#")),
               shinyjs::hidden(wellPanel(
                   id = "author",
-                  h6("Provide two PubMed IDs OR two lists of authors. The lists should not include any special symbol."),
+                  h6("Provide two PubMed IDs OR two lists of authors. 
+                     The lists should not include any special symbol."),
                   layout_columns(
                       col_widths = c(3, 6, 3),
                       card(
                           card_header("PubMed ID"),
-                          numericInput("id1", "PubMed ID 1",
-                                       value = ""),
+                          numericInput("id1", "PubMed ID 1", 
+                                       min = 1, value = ""),
                           numericInput("id2", "PubMed ID 2",
-                                       value = "")
+                                       min = 1, value = "")
                       ),
                       card(card_header("PubMed authors"),
                            card(
@@ -205,7 +206,7 @@ ui = page_navbar(
                                      selected = "No")
               ),
               wellPanel(
-                  textOutput("grantham_distance")
+                  uiOutput("grantham_distance")
               ),
               wellPanel(
                   DTOutput("aa_property")
@@ -215,32 +216,35 @@ ui = page_navbar(
     ## Titin
     nav_panel(h4(HTML("<b>Titin</b>")),
               h5(HTML("<b>TTN exon lookup</b>")),
-              h6(markdown("Provide _single_ SNV position in hg19 OR hg38, 
-                          OR exon range for del-dup.")),
+              h6("Provide a SNV position in hg19 or hg38, OR exon range for del-dup."),
               wellPanel(
                   layout_columns(
                       col_widths = c(6, 6),
                       card(
-                          card_header(markdown("**SNV**")),
+                          card_header(h6(HTML("<b>SNV</b>"))),
                           radioButtons("genome", "Genome",
                                        choices = c("H19", "H38"),
-                                       selected = "H19"),
-                          
+                                       selected = "H19",
+                                       inline = TRUE),
                           numericInput("cnv_pos", "Position",
-                                       value = ""),
+                                       value = "", min = 1),
                       ),
                       card(
-                          card_header(markdown("**Exon del-dup**")),
-                          numericInput("from_exon", "From exon",
-                                       value = ""),
-                          numericInput("to_exon", "To exon",
-                                       value = "")
+                          card_header(h6(HTML("<b>Exon del-dup</b>"))),
+                          div(
+                            style = "display: flex; align-items: center; gap: 20px; width: 100%;",
+                            div(style = "flex: 1;", numericInput("from_exon", "from", min = 1,
+                                                                 value = "", width = "100%")),
+                            tags$span("-", style = "front-weigth: bold; padding-top: 10px;"), 
+                            div(style = "flex: 1;", numericInput("to_exon", "to", min = 1,
+                                                                 value = "", width = "100%"))
+                          )
                       )
                   )
               ),
               wellPanel(
                   h6(markdown("Table adapted from https://www.cardiodb.org/titin/titin_transcripts.php. 
-                              Meta to Nvx3 are differant transcripts.")),
+                              Meta to Nvx3 are transcripts.")),
                   DTOutput("TTN_exon")
               )
     )
@@ -385,9 +389,10 @@ server <- function(input, output, session) {
                 refs = strsplit(input$original, "\n")[[1]]
                 refs = refs[refs != ""]
                 if (length(refs) < 4) {
-                    ref_df = data.frame(matrix(c(0), ncol = 7))
+                    ref_df = data.frame(matrix(c(""), ncol = 7))
                     colnames(ref_df) = c("author", "pmid", "year", "disease",
                                          "comment", "PubMed", "journal")
+                    rownames(ref_df) = NULL
                 } else {
                     records = grep("PubMed", refs, value = TRUE)
                     diseases = grep("Disease", refs, value = TRUE)
@@ -503,17 +508,17 @@ server <- function(input, output, session) {
     observe({
             RT = ref_table()
             if (RT$pmid[1] == 0) {
-                output$pmid1 = renderText("PubMed ID output")
+                output$pmid1 = renderUI("PubMed ID output")
             } else {
+                pmids = paste0(RT$pmid, collapse = ", ")
                 output$pmid1 = renderUI({
-                    HTML(sapply(RT$pmid, function(x) {
-                        paste0("PubMed: ", x, "<br>", sep = "")
-                    }))
+                          HTML(sapply(RT$pmid, function(x) {
+                              paste0("PubMed: ", x, "<br>", sep = "")
+                          }))
                 })
                 output$pmid2 = renderUI({
-                    pmids = paste0(RT$pmid, collapse = ", ")
-                    HTML(paste0("PubMed: ", pmids))
-                    })
+                          HTML(paste0("PubMed: ", pmids))
+                })
             }
             output$ref_table = renderDT(datatable(RT, escape = FALSE))
     })
@@ -521,13 +526,16 @@ server <- function(input, output, session) {
     ## Grantham distance
     observe({
             if (nrow(grantham_dist()) == 0) {
-                output$grantham_distance = renderText(
-                                        "Please select amino acid pairs."
-                                        )
+                output$grantham_distance = renderUI({
+                                        p("Please select amino acid pairs.", 
+                                          style = "color: red;")
+                                        })
             } else {
                 D = grantham_dist()
-                output$grantham_distance = renderText(
-                    paste(D$x, ">", D$y, "=", D$d, collapse = " | "))
+                output$grantham_distance = renderUI({p(
+                            paste(D$x, ">", D$y, "=", D$d, collapse = " | "),
+                            style = "color: green;")
+                    })
             }
     })
     
@@ -567,13 +575,19 @@ server <- function(input, output, session) {
     observe({
             same_authors = same_authors()
             n_same = length(same_authors)
-            same_authors = HTML(paste(same_authors, "<br>"))
-            if (n_same > 1) {
+            if (n_same == 0) {
                 output$sameauthors = renderUI({
-                    HTML(paste0(n_same, "<br>", same_authors))
+                        p(paste0("None"), style = "color: red;")
                 })
             } else {
-                output$sameauthors = renderUI({same_authors})            
+                same_authors = HTML(paste(same_authors, "<br>"))
+                if (n_same > 1) {
+                    output$sameauthors = renderUI({
+                        HTML(paste0(n_same, "<br>", same_authors))
+                    })
+                } else {
+                    output$sameauthors = renderUI({same_authors})
+                }
             }
     })
     
@@ -597,7 +611,7 @@ server <- function(input, output, session) {
             })
     observe({
             nomen = nomen()
-            output$nomen = renderUI({HTML(paste(nomen))})
+            output$nomen = renderUI({p(paste0(nomen), style = "color: green;")})
     })
     
     ## Calculator
